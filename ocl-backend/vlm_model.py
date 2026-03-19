@@ -6,6 +6,8 @@ import logging
 from collections import defaultdict
 from typing import Optional
 
+import os
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -18,6 +20,13 @@ logger = logging.getLogger(__name__)
 UNI2_MODEL_NAME = "MahmoodLab/uni2-h"
 _model = None
 _transform = None
+_clip_model = None
+_clip_processor = None
+
+# Loglarda görünen hata shape'i genelde beklenen patch grid ile uyuşmazlıktan çıkar.
+# Bu model checkpoint'i çoğu ortamda 16x16 grid'e (img_size=256, patch=16 varsayımı) karşılık gelen pozisyonel
+# embedding değerleriyle geliyor; bu yüzden default'u 256 yapıyoruz.
+UNI2_IMG_SIZE = int(os.getenv("UNI2_IMG_SIZE", "256"))
 
 
 def _load_uni2():
@@ -31,17 +40,31 @@ def _load_uni2():
         if HF_TOKEN:
             login(token=HF_TOKEN)
         logger.info(f"UNI2-h yükleniyor...")
-        _model = timm.create_model(
-            "hf-hub:MahmoodLab/uni2-h",
-            pretrained=True,
-            init_values=1e-5,
-            dynamic_img_size=True,
-        )
+        # Bazı ortam/versiyon kombinasyonlarında dynamic_img_size True iken
+        # modelin pozisyonel embedding yeniden boyutlandırması shape error ile
+        # patlayabiliyor. Bu yüzden önce dynamic deniyoruz, olmazsa img_size'ı
+        # sabitleyerek ikinci deneme yapıyoruz.
+        try:
+            _model = timm.create_model(
+                "hf-hub:MahmoodLab/uni2-h",
+                pretrained=True,
+                init_values=1e-5,
+                dynamic_img_size=True,
+            )
+        except Exception as e:
+            logger.warning(f"UNI2-h dynamic yükleme başarısız: {e}. Sabit img_size ile denenecek...")
+            _model = timm.create_model(
+                "hf-hub:MahmoodLab/uni2-h",
+                pretrained=True,
+                init_values=1e-5,
+                dynamic_img_size=False,
+                img_size=UNI2_IMG_SIZE,
+            )
         _model.to(DEVICE)
         _model.eval()
         _transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
+            transforms.Resize(UNI2_IMG_SIZE),
+            transforms.CenterCrop(UNI2_IMG_SIZE),
             transforms.ToTensor(),
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ])
@@ -52,18 +75,59 @@ def _load_uni2():
         return None, None
 
 
+def _load_clip():
+    """
+    UNI2-h bu ortam/versiyon uyumsuzluğu yüzünden yüklenemiyorsa
+    alternatif olarak CLIP kullan.
+    """
+    global _clip_model, _clip_processor
+    if _clip_model is not None and _clip_processor is not None:
+        return _clip_model, _clip_processor
+
+    # config.py zaten VLM_MODEL_NAME'i okuyor; biz burada env'yi direkt alıyoruz.
+    # Örn: openai/clip-vit-base-patch32
+    clip_name = os.getenv("VLM_MODEL_NAME", "openai/clip-vit-base-patch32")
+    try:
+        from transformers import CLIPModel, CLIPProcessor
+
+        logger.info(f"CLIP yükleniyor: {clip_name} @ {DEVICE}")
+        _clip_processor = CLIPProcessor.from_pretrained(clip_name)
+        _clip_model = CLIPModel.from_pretrained(clip_name)
+        _clip_model.to(DEVICE)
+        _clip_model.eval()
+        logger.info("CLIP hazır.")
+        return _clip_model, _clip_processor
+    except Exception as e:
+        logger.error(f"CLIP yüklenemedi: {e}")
+        return None, None
+
+
 def is_loaded() -> bool:
     m, _ = _load_uni2()
-    return m is not None
+    if m is not None:
+        return True
+    cm, _ = _load_clip()
+    return cm is not None
 
 
 def extract_features(crop: Image.Image) -> Optional[np.ndarray]:
     model, transform = _load_uni2()
-    if model is None:
+    if model is not None and transform is not None:
+        with torch.no_grad():
+            tensor = transform(crop).unsqueeze(0).to(DEVICE)
+            feats = model(tensor)
+            feats = F.normalize(feats, dim=-1)
+        return feats.cpu().numpy()[0]
+
+    # Fallback: CLIP
+    clip_model, clip_processor = _load_clip()
+    if clip_model is None or clip_processor is None:
         return None
+
     with torch.no_grad():
-        tensor = transform(crop).unsqueeze(0).to(DEVICE)
-        feats = model(tensor)
+        inputs = clip_processor(images=crop, return_tensors="pt")
+        inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+        feats = clip_model.get_image_features(**inputs)
         feats = F.normalize(feats, dim=-1)
     return feats.cpu().numpy()[0]
 

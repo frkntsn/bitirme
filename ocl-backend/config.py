@@ -2,10 +2,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 
-load_dotenv()
-
 # Proje kök dizini
 BASE_DIR = Path(__file__).parent
+
+# Bu backend için doğru `.env` dosyasını özellikle yükle.
+# Böylece yukarı dizinlerdeki başka `.env` değerleri yanlışlıkla override etmez.
+load_dotenv(dotenv_path=BASE_DIR / ".env")
 
 # SAM
 SAM_CHECKPOINT = os.getenv("SAM_CHECKPOINT", str(BASE_DIR / "weights" / "sam_vit_b_01ec64.pth"))
