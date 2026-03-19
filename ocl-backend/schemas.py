@@ -14,6 +14,10 @@ class SegmentRequest(BaseModel):
     annotations: List[AnnotationIn] = Field(..., min_length=1)
 
 
+class InferRequest(BaseModel):
+    image: str
+
+
 class SegmentResult(BaseModel):
     label: str
     predicted_class: str
@@ -34,6 +38,23 @@ class SegmentResponse(BaseModel):
     results: List[SegmentResult]        # annotation başına sonuç
     detections: List[DetectedRegion]    # tüm görseldeki eşleşmeler
     model_updated: bool = False
+
+
+class FeedbackItem(BaseModel):
+    label: str = Field(..., min_length=1)
+    accepted: bool
+    predicted_label: Optional[str] = None
+    corrected_label: Optional[str] = None
+    crop_b64: Optional[str] = None
+
+
+class FeedbackRequest(BaseModel):
+    items: List[FeedbackItem] = Field(..., min_length=1)
+
+
+class FeedbackResponse(BaseModel):
+    updated_count: int
+    skipped_count: int
 
 
 class HealthResponse(BaseModel):

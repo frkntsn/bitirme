@@ -22,6 +22,7 @@ _model = None
 _transform = None
 _clip_model = None
 _clip_processor = None
+_UNI2_LOAD_FAILED = False
 
 # Loglarda görünen hata shape'i genelde beklenen patch grid ile uyuşmazlıktan çıkar.
 # Bu model checkpoint'i çoğu ortamda 16x16 grid'e (img_size=256, patch=16 varsayımı) karşılık gelen pozisyonel
@@ -41,8 +42,13 @@ if UNI2_IMG_SIZE not in _UNI2_CANDIDATES:
 
 def _load_uni2():
     global _model, _transform
+    global _UNI2_LOAD_FAILED
     if _model is not None:
         return _model, _transform
+    # UNI2-h bir kere yüklenemediğinde /health gibi sık çağrılan endpoint'lerde
+    # tekrar tekrar denememek için cache'liyoruz.
+    if _UNI2_LOAD_FAILED:
+        return None, None
     try:
         import timm
         from torchvision import transforms
@@ -96,6 +102,7 @@ def _load_uni2():
         return _model, _transform
     except Exception as e:
         logger.error(f"UNI2-h yüklenemedi: {e}")
+        _UNI2_LOAD_FAILED = True
         return None, None
 
 
@@ -233,6 +240,8 @@ class NCMClassifier:
     def __init__(self):
         self.class_means: dict = {}
         self.class_counts: dict = defaultdict(int)
+        self.negative_means: dict = {}
+        self.negative_counts: dict = defaultdict(int)
 
     def update(self, label: str, feature: np.ndarray):
         n = self.class_counts[label]
@@ -255,7 +264,57 @@ class NCMClassifier:
             if sim > best_sim:
                 best_sim = sim
                 best_label = label
-        return best_label, (best_sim + 1.0) / 2.0
+
+        # Negatif hafıza cezası: örnek seçilen sınıfın reddedilmiş örneklerine benziyorsa
+        # confidence'i düşür.
+        neg_penalty = 0.0
+        neg_mean = self.negative_means.get(best_label)
+        if neg_mean is not None:
+            neg_penalty = max(0.0, float(np.dot(feat_norm, neg_mean)))
+
+        conf = (best_sim + 1.0) / 2.0
+        conf = max(0.0, min(1.0, conf - 0.25 * neg_penalty))
+        return best_label, conf
+
+    def update_negative(self, label: str, feature: np.ndarray):
+        n = self.negative_counts[label]
+        if label not in self.negative_means:
+            self.negative_means[label] = feature.copy()
+        else:
+            self.negative_means[label] = (self.negative_means[label] * n + feature) / (n + 1)
+            norm = np.linalg.norm(self.negative_means[label])
+            if norm > 0:
+                self.negative_means[label] /= norm
+        self.negative_counts[label] += 1
+
+    def apply_feedback(
+        self,
+        feature: np.ndarray,
+        predicted_label: str,
+        accepted: bool,
+        corrected_label: Optional[str] = None,
+    ) -> bool:
+        """
+        accepted=True  => predicted_label (veya corrected_label) için pozitif güncelle.
+        accepted=False => predicted_label için negatif güncelle.
+                         corrected_label varsa o sınıfa pozitif güncelle.
+        """
+        if accepted:
+            target = (corrected_label or predicted_label or "").strip()
+            if not target:
+                return False
+            self.update(target, feature)
+            return True
+
+        wrong = (predicted_label or "").strip()
+        if wrong:
+            self.update_negative(wrong, feature)
+
+        corrected = (corrected_label or "").strip()
+        if corrected:
+            self.update(corrected, feature)
+
+        return bool(wrong or corrected)
 
     @property
     def known_classes(self) -> list:

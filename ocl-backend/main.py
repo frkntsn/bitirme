@@ -12,7 +12,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import CORS_ORIGINS
-from schemas import SegmentRequest, SegmentResponse, SegmentResult, DetectedRegion, HealthResponse
+from schemas import (
+    SegmentRequest, SegmentResponse, SegmentResult, DetectedRegion, HealthResponse,
+    InferRequest, FeedbackRequest, FeedbackResponse
+)
 import segmentation
 import vlm_model
 
@@ -117,3 +120,79 @@ def segment(req: SegmentRequest):
         detections=detections,
         model_updated=any_updated,
     )
+
+
+@app.post("/infer", response_model=SegmentResponse)
+def infer(req: InferRequest):
+    """Annotation olmadan sadece tarama/inference."""
+    try:
+        image = segmentation.decode_image(req.image)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Görsel çözümlenemedi: {e}")
+
+    detections = []
+    if vlm_model.classifier.known_classes:
+        try:
+            all_segments = segmentation.scan_full_image(image)
+        except Exception as e:
+            logger.error(f"Tam tarama hatası: {e}")
+            all_segments = []
+
+        for seg in all_segments:
+            feature = vlm_model.extract_features(seg["crop"])
+            if feature is None:
+                continue
+            pred_label, conf = vlm_model.classifier.predict(feature)
+            if conf >= DETECTION_THRESHOLD:
+                detections.append(DetectedRegion(
+                    bbox=seg["bbox"],
+                    label=pred_label,
+                    confidence=round(conf, 4),
+                    crop_b64=seg.get("crop_b64"),
+                    mask_area=seg.get("mask_area"),
+                ))
+
+    return SegmentResponse(results=[], detections=detections, model_updated=False)
+
+
+@app.post("/feedback", response_model=FeedbackResponse)
+def feedback(req: FeedbackRequest):
+    """
+    Kullanıcının doğru/yanlış geri bildirimi.
+    - accepted=True  => pozitif güncelleme
+    - accepted=False => yanlış sınıfa negatif, corrected_label varsa doğru sınıfa pozitif güncelleme
+    """
+    updated = 0
+    skipped = 0
+
+    for item in req.items:
+        if not item.crop_b64:
+            skipped += 1
+            continue
+        try:
+            crop = segmentation.decode_image(item.crop_b64)
+            feature = vlm_model.extract_features(crop)
+            if feature is None:
+                skipped += 1
+                continue
+
+            predicted_label = (item.predicted_label or item.label).strip()
+            corrected_label = (item.corrected_label or "").strip() or None
+            did_update = vlm_model.classifier.apply_feedback(
+                feature=feature,
+                predicted_label=predicted_label,
+                accepted=item.accepted,
+                corrected_label=corrected_label,
+            )
+            if did_update and item.accepted:
+                vlm_model.buffer.add(feature, corrected_label or predicted_label)
+
+            if did_update:
+                updated += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            logger.error(f"Feedback işlenemedi: {e}")
+            skipped += 1
+
+    return FeedbackResponse(updated_count=updated, skipped_count=skipped)

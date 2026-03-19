@@ -31,3 +31,16 @@ export interface SegmentResponse {
   detections: DetectedRegion[]
   model_updated: boolean
 }
+
+export interface FeedbackItem {
+  label: string
+  accepted: boolean
+  predicted_label?: string
+  corrected_label?: string
+  crop_b64?: string
+}
+
+export interface FeedbackResponse {
+  updated_count: number
+  skipped_count: number
+}

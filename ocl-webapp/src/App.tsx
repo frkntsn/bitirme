@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback } from 'react'
 import ImageCanvas from './components/ImageCanvas'
 import AnnotationSidebar from './components/AnnotationSidebar'
 import { useAnnotation } from './hooks/useAnnotation'
-import { segment } from './api/client'
+import { infer, segment, sendFeedback } from './api/client'
 import { SegmentResult, DetectedRegion } from './types'
 import styles from './App.module.css'
 
@@ -16,6 +16,7 @@ export default function App() {
   const [detections, setDetections] = useState<DetectedRegion[]>([])
   const [error, setError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
+  const [correctedLabels, setCorrectedLabels] = useState<Record<number, string>>({})
   const containerRef = useRef<HTMLDivElement>(null)
 
   const { annotations, addAnnotation, removeAnnotation, clearAll } = useAnnotation()
@@ -30,6 +31,7 @@ export default function App() {
       setResults([])
       setDetections([])
       setError(null)
+      setCorrectedLabels({})
       clearAll()
     }
     reader.readAsDataURL(file)
@@ -62,6 +64,40 @@ export default function App() {
       setError(err.message || 'Bilinmeyen hata')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleScanOnly = async () => {
+    if (!imageBase64) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await infer(imageBase64)
+      setResults(res.results)
+      setDetections(res.detections)
+    } catch (err: any) {
+      setError(err.message || 'Bilinmeyen hata')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDetectionFeedback = async (idx: number, accepted: boolean) => {
+    const d = detections[idx]
+    if (!d) return
+    try {
+      const feedbackRes = await sendFeedback([
+        {
+          label: d.label,
+          predicted_label: d.label,
+          accepted,
+          corrected_label: correctedLabels[idx]?.trim() || undefined,
+          crop_b64: d.crop_b64,
+        },
+      ])
+      setError(`Geri bildirim işlendi. update=${feedbackRes.updated_count}, skip=${feedbackRes.skipped_count}`)
+    } catch (err: any) {
+      setError(err.message || 'Feedback hatası')
     }
   }
 
@@ -121,6 +157,12 @@ export default function App() {
           onRemove={removeAnnotation}
           onClearAll={clearAll}
           onSend={handleSend}
+          onScanOnly={handleScanOnly}
+          onDetectionFeedback={handleDetectionFeedback}
+          correctedLabels={correctedLabels}
+          onCorrectedLabelChange={(idx, value) =>
+            setCorrectedLabels((prev) => ({ ...prev, [idx]: value }))
+          }
           loading={loading}
           results={results}
           detections={detections}

@@ -11,6 +11,10 @@ interface Props {
   onRemove: (id: string) => void
   onClearAll: () => void
   onSend: () => void
+  onScanOnly: () => void
+  onDetectionFeedback: (idx: number, accepted: boolean) => void
+  correctedLabels: Record<number, string>
+  onCorrectedLabelChange: (idx: number, value: string) => void
   loading: boolean
   results: SegmentResult[]
   detections: DetectedRegion[]
@@ -19,7 +23,8 @@ interface Props {
 
 export default function AnnotationSidebar({
   label, onLabelChange, annotations, onRemove,
-  onClearAll, onSend, loading, results, detections, error,
+  onClearAll, onSend, onScanOnly, onDetectionFeedback, correctedLabels, onCorrectedLabelChange,
+  loading, results, detections, error,
 }: Props) {
   return (
     <aside className={styles.sidebar}>
@@ -70,6 +75,14 @@ export default function AnnotationSidebar({
       >
         {loading ? 'Tüm görsel taranıyor...' : `Gönder + Tüm Görseli Tara`}
       </button>
+      <button
+        className={styles.sendBtn}
+        disabled={loading}
+        onClick={onScanOnly}
+        style={{ marginTop: 8, background: '#374151' }}
+      >
+        {loading ? 'Taranıyor...' : 'Sadece Tara (Annotasyonsuz)'}
+      </button>
 
       {error && <div className={styles.errorBox}>{error}</div>}
 
@@ -106,6 +119,29 @@ export default function AnnotationSidebar({
               </div>
             </div>
           ))}
+
+          {/* Tek tek geri bildirim */}
+          <div style={{ marginTop: 10 }}>
+            {detections.map((d, i) => (
+              <div key={`fb-${i}`} className={styles.resultItem}>
+                <div className={styles.resultRow}>
+                  <span className={styles.resultClass}>{d.label}</span>
+                  <span className={styles.confidenceText}>%{Math.round(d.confidence * 100)}</span>
+                </div>
+                <div className={styles.resultRow} style={{ marginTop: 6, gap: 8 }}>
+                  <button className={styles.chip} onClick={() => onDetectionFeedback(i, true)}>Doğru</button>
+                  <button className={styles.chip} onClick={() => onDetectionFeedback(i, false)}>Yanlış</button>
+                </div>
+                <input
+                  className={styles.input}
+                  style={{ marginTop: 6 }}
+                  placeholder="Yanlışsa doğrusu (opsiyonel)"
+                  value={correctedLabels[i] || ''}
+                  onChange={(e) => onCorrectedLabelChange(i, e.target.value)}
+                />
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
