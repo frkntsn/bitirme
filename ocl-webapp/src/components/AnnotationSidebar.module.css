@@ -1,0 +1,249 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 260px;
+  flex-shrink: 0;
+}
+
+.card {
+  background: #fff;
+  border: 0.5px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.listCard {
+  flex: 1;
+}
+
+.cardTitle {
+  font-size: 11px;
+  font-weight: 500;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
+}
+
+.input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 0.5px solid #ccc;
+  border-radius: 8px;
+  font-size: 13px;
+  background: #fafafa;
+  outline: none;
+  transition: border-color 0.15s;
+  margin-bottom: 8px;
+}
+
+.input:focus {
+  border-color: #2563eb;
+}
+
+.quickLabels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.quickHint {
+  font-size: 11px;
+  color: #aaa;
+}
+
+.chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 0.5px solid #ddd;
+  border-radius: 20px;
+  background: transparent;
+  color: #555;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.chip:hover {
+  background: #f0f0f0;
+}
+
+.listHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.listHeader .cardTitle {
+  margin-bottom: 0;
+}
+
+.textBtn {
+  font-size: 11px;
+  color: #aaa;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.textBtn:hover {
+  color: #555;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 60px;
+}
+
+.empty {
+  font-size: 12px;
+  color: #bbb;
+}
+
+.annItem {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #fafafa;
+  font-size: 12px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.annLabel {
+  flex: 1;
+  font-weight: 500;
+  color: #111;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.annMeta {
+  font-size: 11px;
+  color: #aaa;
+}
+
+.delBtn {
+  background: none;
+  border: none;
+  font-size: 16px;
+  color: #ccc;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.delBtn:hover {
+  color: #e53e3e;
+}
+
+.sendBtn {
+  padding: 10px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.sendBtn:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.sendBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.errorBox {
+  background: #fff5f5;
+  border: 0.5px solid #feb2b2;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+  color: #c53030;
+}
+
+.resultsCard {
+  background: #fff;
+  border: 0.5px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.resultItem {
+  margin-bottom: 10px;
+}
+
+.resultRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.resultLabel {
+  font-weight: 500;
+  color: #333;
+}
+
+.resultArrow {
+  color: #aaa;
+}
+
+.resultClass {
+  font-weight: 500;
+  color: #16a34a;
+}
+
+.confidence {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 6px;
+}
+
+.confidenceBar {
+  height: 100%;
+  background: #16a34a;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+.confidenceText {
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+}
+
+.detectionBadge {
+  font-size: 12px;
+  padding: 3px 10px;
+  background: #dcfce7;
+  color: #16a34a;
+  border-radius: 20px;
+  font-weight: 500;
+}
+
+.resultCount {
+  font-size: 12px;
+  color: #555;
+  margin-left: auto;
+}
