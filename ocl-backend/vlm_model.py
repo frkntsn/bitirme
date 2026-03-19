@@ -27,6 +27,16 @@ _clip_processor = None
 # Bu model checkpoint'i çoğu ortamda 16x16 grid'e (img_size=256, patch=16 varsayımı) karşılık gelen pozisyonel
 # embedding değerleriyle geliyor; bu yüzden default'u 256 yapıyoruz.
 UNI2_IMG_SIZE = int(os.getenv("UNI2_IMG_SIZE", "256"))
+UNI2_IMG_SIZE_CANDIDATES = os.getenv(
+    "UNI2_IMG_SIZE_CANDIDATES",
+    "256,240,224,192,288,320,384"
+)
+try:
+    _UNI2_CANDIDATES = [int(x.strip()) for x in UNI2_IMG_SIZE_CANDIDATES.split(",") if x.strip()]
+except Exception:
+    _UNI2_CANDIDATES = [UNI2_IMG_SIZE]
+if UNI2_IMG_SIZE not in _UNI2_CANDIDATES:
+    _UNI2_CANDIDATES = [UNI2_IMG_SIZE] + _UNI2_CANDIDATES
 
 
 def _load_uni2():
@@ -42,8 +52,9 @@ def _load_uni2():
         logger.info(f"UNI2-h yükleniyor...")
         # Bazı ortam/versiyon kombinasyonlarında dynamic_img_size True iken
         # modelin pozisyonel embedding yeniden boyutlandırması shape error ile
-        # patlayabiliyor. Bu yüzden önce dynamic deniyoruz, olmazsa img_size'ı
-        # sabitleyerek ikinci deneme yapıyoruz.
+        # patlayabiliyor. Bu yüzden:
+        # 1) dynamic_img_size=True deniyoruz
+        # 2) başarısız olursa dynamic_img_size=False ile farklı img_size adaylarını deniyoruz
         try:
             _model = timm.create_model(
                 "hf-hub:MahmoodLab/uni2-h",
@@ -52,14 +63,27 @@ def _load_uni2():
                 dynamic_img_size=True,
             )
         except Exception as e:
-            logger.warning(f"UNI2-h dynamic yükleme başarısız: {e}. Sabit img_size ile denenecek...")
-            _model = timm.create_model(
-                "hf-hub:MahmoodLab/uni2-h",
-                pretrained=True,
-                init_values=1e-5,
-                dynamic_img_size=False,
-                img_size=UNI2_IMG_SIZE,
+            logger.warning(
+                f"UNI2-h dynamic yükleme başarısız: {e}. Sabit img_size adayları deneniyor: {_UNI2_CANDIDATES}"
             )
+            last_err = e
+            _model = None
+            for cand in _UNI2_CANDIDATES:
+                try:
+                    _model = timm.create_model(
+                        "hf-hub:MahmoodLab/uni2-h",
+                        pretrained=True,
+                        init_values=1e-5,
+                        dynamic_img_size=False,
+                        img_size=cand,
+                    )
+                    logger.info(f"UNI2-h sabit img_size ile hazır: {cand}")
+                    break
+                except Exception as e2:
+                    last_err = e2
+                    logger.warning(f"UNI2-h img_size={cand} başarısız: {e2}")
+            if _model is None:
+                raise last_err
         _model.to(DEVICE)
         _model.eval()
         _transform = transforms.Compose([
@@ -110,12 +134,53 @@ def is_loaded() -> bool:
     return cm is not None
 
 
+def loaded_backend_name() -> Optional[str]:
+    """
+    Yüklenmiş halde hangisi aktifse onu döner.
+    Not: Bu fonksiyon yeni model indirmeye/yeniden yüklemeye çalışmaz;
+    sadece cache değişkenlerine bakar.
+    """
+    if _model is not None and _transform is not None:
+        return "MahmoodLab/uni2-h"
+    if _clip_model is not None and _clip_processor is not None:
+        return "openai/clip-vit-base-patch32"
+    return None
+
+
+def _to_feature_tensor(x) -> Optional[torch.Tensor]:
+    """
+    Bazı modeller tensor yerine output dataclass döndürebilir
+    (örn. BaseModelOutputWithPooling). normalize edebilmek için
+    (B, D) şekilli tensor'a çeviriyoruz.
+    """
+    if isinstance(x, torch.Tensor):
+        return x
+
+    # Transformers/timm output dataclass'ları
+    for attr in ("pooler_output", "image_embeds", "text_embeds"):
+        if hasattr(x, attr):
+            v = getattr(x, attr)
+            if isinstance(v, torch.Tensor):
+                return v
+
+    # last_hidden_state => (B, T, D) -> mean pool
+    if hasattr(x, "last_hidden_state"):
+        v = getattr(x, "last_hidden_state")
+        if isinstance(v, torch.Tensor) and v.dim() >= 3:
+            return v.mean(dim=1)
+
+    return None
+
+
 def extract_features(crop: Image.Image) -> Optional[np.ndarray]:
     model, transform = _load_uni2()
     if model is not None and transform is not None:
         with torch.no_grad():
             tensor = transform(crop).unsqueeze(0).to(DEVICE)
-            feats = model(tensor)
+            feats_out = model(tensor)
+            feats = _to_feature_tensor(feats_out)
+            if feats is None:
+                return None
             feats = F.normalize(feats, dim=-1)
         return feats.cpu().numpy()[0]
 
@@ -127,7 +192,10 @@ def extract_features(crop: Image.Image) -> Optional[np.ndarray]:
     with torch.no_grad():
         inputs = clip_processor(images=crop, return_tensors="pt")
         inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-        feats = clip_model.get_image_features(**inputs)
+        feats_out = clip_model.get_image_features(**inputs)
+        feats = _to_feature_tensor(feats_out)
+        if feats is None:
+            return None
         feats = F.normalize(feats, dim=-1)
     return feats.cpu().numpy()[0]
 

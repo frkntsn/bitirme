@@ -40,6 +40,7 @@ class HealthResponse(BaseModel):
     status: str
     sam_loaded: bool
     vlm_loaded: bool
+    vlm_backend: Optional[str] = None
     device: str
     buffer_size: int
     known_classes: List[str]

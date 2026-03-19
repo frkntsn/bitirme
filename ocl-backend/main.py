@@ -40,6 +40,7 @@ def health():
         status="ok",
         sam_loaded=segmentation.is_loaded(),
         vlm_loaded=vlm_model.is_loaded(),
+        vlm_backend=vlm_model.loaded_backend_name(),
         device=DEVICE,
         buffer_size=len(vlm_model.buffer),
         known_classes=vlm_model.classifier.known_classes,
