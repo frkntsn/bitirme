@@ -2,16 +2,24 @@
 OCL Backend — FastAPI
 
 POST /segment:
-  1. Annotasyon bölgesini SAM ile kes → UNI2 feature → NCM güncelle
-  2. Tüm görseli SAM ile tara → her segment için UNI2 feature → NCM tahmin
+  1. Annotasyon bölgesini SAM ile kes → DINOv2 gömü → NCM güncelle
+  2. Tüm görseli SAM ile tara → her segment için DINOv2 gömü → NCM tahmin
   3. Threshold üstündeki eşleşmeleri döndür
 """
 
 import logging
+from collections import defaultdict
+from typing import List
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import CORS_ORIGINS
+from config import (
+    CORS_ORIGINS,
+    DETECTION_THRESHOLD,
+    DETECTION_TOP_K,
+    DETECTION_NMS_IOU,
+)
 from schemas import (
     SegmentRequest, SegmentResponse, SegmentResult, DetectedRegion, HealthResponse,
     InferRequest, FeedbackRequest, FeedbackResponse
@@ -32,8 +40,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Eşleşme için minimum confidence eşiği
-DETECTION_THRESHOLD = 0.60
+def _iou_xywh(a: List[float], b: List[float]) -> float:
+    ax, ay, aw, ah = a[0], a[1], a[2], a[3]
+    bx, by, bw, bh = b[0], b[1], b[2], b[3]
+    a_x2, a_y2 = ax + aw, ay + ah
+    b_x2, b_y2 = bx + bw, by + bh
+    ix1, iy1 = max(ax, bx), max(ay, by)
+    ix2, iy2 = min(a_x2, b_x2), min(a_y2, b_y2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    union = aw * ah + bw * bh - inter
+    return float(inter / union) if union > 0 else 0.0
+
+
+def _nms_detections(dets: List[DetectedRegion], iou_thresh: float, top_k: int) -> List[DetectedRegion]:
+    """Sınıf başına IoU tabanlı bastırma; sonra güvene göre global top_k."""
+    by_label: dict = defaultdict(list)
+    for d in dets:
+        by_label[d.label].append(d)
+    kept: List[DetectedRegion] = []
+    for lbl in sorted(by_label.keys()):
+        group = sorted(by_label[lbl], key=lambda x: x.confidence, reverse=True)
+        while group:
+            cur = group.pop(0)
+            kept.append(cur)
+            group = [g for g in group if _iou_xywh(cur.bbox, g.bbox) < iou_thresh]
+    kept.sort(key=lambda x: x.confidence, reverse=True)
+    return kept[:top_k]
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -110,9 +145,12 @@ def segment(req: SegmentRequest):
                     mask_area=seg.get("mask_area"),
                 ))
 
+        raw_n = len(detections)
+        detections = _nms_detections(detections, DETECTION_NMS_IOU, DETECTION_TOP_K)
         logger.info(
-            f"Tarama tamamlandı: {len(all_segments)} segment, "
-            f"{len(detections)} eşleşme (threshold={DETECTION_THRESHOLD})"
+            f"Tarama tamamlandı: {len(all_segments)} aday, {raw_n} eşik üstü, "
+            f"{len(detections)} son (threshold={DETECTION_THRESHOLD}, "
+            f"nms_iou={DETECTION_NMS_IOU}, top_k={DETECTION_TOP_K})"
         )
 
     return SegmentResponse(
@@ -151,6 +189,8 @@ def infer(req: InferRequest):
                     crop_b64=seg.get("crop_b64"),
                     mask_area=seg.get("mask_area"),
                 ))
+
+        detections = _nms_detections(detections, DETECTION_NMS_IOU, DETECTION_TOP_K)
 
     return SegmentResponse(results=[], detections=detections, model_updated=False)
 

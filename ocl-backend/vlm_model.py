@@ -1,5 +1,6 @@
 """
-VLM-CL Modeli — UNI2-h Backbone
+Gömü motoru — DINOv2 (torch.hub) + isteğe bağlı CLIP yedeği.
+NCM + MIR buffer ile online güncelleme aynı kalır.
 """
 
 import logging
@@ -12,112 +13,98 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from torchvision import transforms
 
-from config import BUFFER_SIZE, DEVICE, HF_TOKEN
+from config import BUFFER_SIZE, DEVICE, DINOV2_IMG_SIZE, DINOV2_MODEL, VLM_MODEL_NAME
 
 logger = logging.getLogger(__name__)
 
-UNI2_MODEL_NAME = "MahmoodLab/uni2-h"
-_model = None
-_transform = None
+_dinov2_model = None
+_dinov2_transform = None
+_dinov2_backend_label: Optional[str] = None
+_DINOV2_LOAD_FAILED = False
+
 _clip_model = None
 _clip_processor = None
-_UNI2_LOAD_FAILED = False
-
-# Loglarda görünen hata shape'i genelde beklenen patch grid ile uyuşmazlıktan çıkar.
-# Bu model checkpoint'i çoğu ortamda 16x16 grid'e (img_size=256, patch=16 varsayımı) karşılık gelen pozisyonel
-# embedding değerleriyle geliyor; bu yüzden default'u 256 yapıyoruz.
-UNI2_IMG_SIZE = int(os.getenv("UNI2_IMG_SIZE", "256"))
-UNI2_IMG_SIZE_CANDIDATES = os.getenv(
-    "UNI2_IMG_SIZE_CANDIDATES",
-    "256,240,224,192,288,320,384"
-)
-try:
-    _UNI2_CANDIDATES = [int(x.strip()) for x in UNI2_IMG_SIZE_CANDIDATES.split(",") if x.strip()]
-except Exception:
-    _UNI2_CANDIDATES = [UNI2_IMG_SIZE]
-if UNI2_IMG_SIZE not in _UNI2_CANDIDATES:
-    _UNI2_CANDIDATES = [UNI2_IMG_SIZE] + _UNI2_CANDIDATES
 
 
-def _load_uni2():
-    global _model, _transform
-    global _UNI2_LOAD_FAILED
-    if _model is not None:
-        return _model, _transform
-    # UNI2-h bir kere yüklenemediğinde /health gibi sık çağrılan endpoint'lerde
-    # tekrar tekrar denememek için cache'liyoruz.
-    if _UNI2_LOAD_FAILED:
+def _dinov2_cls_embedding(model: torch.nn.Module, tensor: torch.Tensor) -> Optional[torch.Tensor]:
+    """forward_features çıktısından (B, D) CLS vektörü."""
+    out = model.forward_features(tensor)
+    if isinstance(out, dict):
+        t = out.get("x_norm_clstoken")
+        if isinstance(t, torch.Tensor):
+            if t.dim() == 3:
+                return t[:, 0]
+            return t
+        t = out.get("x_norm_patchtokens")
+        if isinstance(t, torch.Tensor) and t.dim() == 3:
+            return t.mean(dim=1)
+        return None
+    if isinstance(out, torch.Tensor):
+        if out.dim() == 3:
+            return out[:, 0]
+        if out.dim() == 2:
+            return out
+    return None
+
+
+def _load_dinov2():
+    global _dinov2_model, _dinov2_transform, _dinov2_backend_label
+    global _DINOV2_LOAD_FAILED
+
+    if _dinov2_model is not None:
+        return _dinov2_model, _dinov2_transform
+    if _DINOV2_LOAD_FAILED:
         return None, None
+
+    if DINOV2_IMG_SIZE % 14 != 0:
+        logger.warning(
+            f"DINOV2_IMG_SIZE={DINOV2_IMG_SIZE} patch 14 için uygun değil; 224 kullanılıyor."
+        )
+        img_size = 224
+    else:
+        img_size = DINOV2_IMG_SIZE
+
     try:
-        import timm
-        from torchvision import transforms
-        from huggingface_hub import login
-        if HF_TOKEN:
-            login(token=HF_TOKEN)
-        logger.info(f"UNI2-h yükleniyor...")
-        # Bazı ortam/versiyon kombinasyonlarında dynamic_img_size True iken
-        # modelin pozisyonel embedding yeniden boyutlandırması shape error ile
-        # patlayabiliyor. Bu yüzden:
-        # 1) dynamic_img_size=True deniyoruz
-        # 2) başarısız olursa dynamic_img_size=False ile farklı img_size adaylarını deniyoruz
-        try:
-            _model = timm.create_model(
-                "hf-hub:MahmoodLab/uni2-h",
-                pretrained=True,
-                init_values=1e-5,
-                dynamic_img_size=True,
-            )
-        except Exception as e:
-            logger.warning(
-                f"UNI2-h dynamic yükleme başarısız: {e}. Sabit img_size adayları deneniyor: {_UNI2_CANDIDATES}"
-            )
-            last_err = e
-            _model = None
-            for cand in _UNI2_CANDIDATES:
-                try:
-                    _model = timm.create_model(
-                        "hf-hub:MahmoodLab/uni2-h",
-                        pretrained=True,
-                        init_values=1e-5,
-                        dynamic_img_size=False,
-                        img_size=cand,
-                    )
-                    logger.info(f"UNI2-h sabit img_size ile hazır: {cand}")
-                    break
-                except Exception as e2:
-                    last_err = e2
-                    logger.warning(f"UNI2-h img_size={cand} başarısız: {e2}")
-            if _model is None:
-                raise last_err
-        _model.to(DEVICE)
-        _model.eval()
-        _transform = transforms.Compose([
-            transforms.Resize(UNI2_IMG_SIZE),
-            transforms.CenterCrop(UNI2_IMG_SIZE),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ])
-        logger.info("UNI2-h hazır.")
-        return _model, _transform
+        logger.info(f"DINOv2 yükleniyor: {DINOV2_MODEL} @ {DEVICE} (giriş {img_size})")
+        model = torch.hub.load(
+            "facebookresearch/dinov2",
+            DINOV2_MODEL,
+            pretrained=True,
+            trust_repo=True,
+        )
+        model.to(DEVICE)
+        model.eval()
+
+        _dinov2_transform = transforms.Compose(
+            [
+                transforms.Resize(int(img_size * 256 / 224), interpolation=transforms.InterpolationMode.BICUBIC),
+                transforms.CenterCrop(img_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ]
+        )
+        _dinov2_model = model
+        _dinov2_backend_label = f"facebookresearch/dinov2:{DINOV2_MODEL}"
+        logger.info("DINOv2 hazır.")
+        return _dinov2_model, _dinov2_transform
     except Exception as e:
-        logger.error(f"UNI2-h yüklenemedi: {e}")
-        _UNI2_LOAD_FAILED = True
+        logger.error(f"DINOv2 yüklenemedi: {e}")
+        _DINOV2_LOAD_FAILED = True
+        _dinov2_model = None
+        _dinov2_transform = None
+        _dinov2_backend_label = None
         return None, None
 
 
 def _load_clip():
-    """
-    UNI2-h bu ortam/versiyon uyumsuzluğu yüzünden yüklenemiyorsa
-    alternatif olarak CLIP kullan.
-    """
+    """DINOv2 yüklenemezse alternatif görü gömüsü."""
     global _clip_model, _clip_processor
     if _clip_model is not None and _clip_processor is not None:
         return _clip_model, _clip_processor
 
-    # config.py zaten VLM_MODEL_NAME'i okuyor; biz burada env'yi direkt alıyoruz.
-    # Örn: openai/clip-vit-base-patch32
-    clip_name = os.getenv("VLM_MODEL_NAME", "openai/clip-vit-base-patch32")
+    clip_name = os.getenv("VLM_MODEL_NAME", VLM_MODEL_NAME)
     try:
         from transformers import CLIPModel, CLIPProcessor
 
@@ -134,7 +121,7 @@ def _load_clip():
 
 
 def is_loaded() -> bool:
-    m, _ = _load_uni2()
+    m, _ = _load_dinov2()
     if m is not None:
         return True
     cm, _ = _load_clip()
@@ -143,55 +130,41 @@ def is_loaded() -> bool:
 
 def loaded_backend_name() -> Optional[str]:
     """
-    Yüklenmiş halde hangisi aktifse onu döner.
-    Not: Bu fonksiyon yeni model indirmeye/yeniden yüklemeye çalışmaz;
-    sadece cache değişkenlerine bakar.
+    Aktif gömü backend'i (yeni yükleme denemez; sadece önbelleğe bakar).
     """
-    if _model is not None and _transform is not None:
-        return "MahmoodLab/uni2-h"
+    if _dinov2_model is not None and _dinov2_transform is not None:
+        return _dinov2_backend_label
     if _clip_model is not None and _clip_processor is not None:
-        return "openai/clip-vit-base-patch32"
+        return os.getenv("VLM_MODEL_NAME", VLM_MODEL_NAME)
     return None
 
 
 def _to_feature_tensor(x) -> Optional[torch.Tensor]:
-    """
-    Bazı modeller tensor yerine output dataclass döndürebilir
-    (örn. BaseModelOutputWithPooling). normalize edebilmek için
-    (B, D) şekilli tensor'a çeviriyoruz.
-    """
     if isinstance(x, torch.Tensor):
         return x
-
-    # Transformers/timm output dataclass'ları
     for attr in ("pooler_output", "image_embeds", "text_embeds"):
         if hasattr(x, attr):
             v = getattr(x, attr)
             if isinstance(v, torch.Tensor):
                 return v
-
-    # last_hidden_state => (B, T, D) -> mean pool
     if hasattr(x, "last_hidden_state"):
         v = getattr(x, "last_hidden_state")
         if isinstance(v, torch.Tensor) and v.dim() >= 3:
             return v.mean(dim=1)
-
     return None
 
 
 def extract_features(crop: Image.Image) -> Optional[np.ndarray]:
-    model, transform = _load_uni2()
+    model, transform = _load_dinov2()
     if model is not None and transform is not None:
         with torch.no_grad():
             tensor = transform(crop).unsqueeze(0).to(DEVICE)
-            feats_out = model(tensor)
-            feats = _to_feature_tensor(feats_out)
+            feats = _dinov2_cls_embedding(model, tensor)
             if feats is None:
                 return None
             feats = F.normalize(feats, dim=-1)
         return feats.cpu().numpy()[0]
 
-    # Fallback: CLIP
     clip_model, clip_processor = _load_clip()
     if clip_model is None or clip_processor is None:
         return None
@@ -265,8 +238,6 @@ class NCMClassifier:
                 best_sim = sim
                 best_label = label
 
-        # Negatif hafıza cezası: örnek seçilen sınıfın reddedilmiş örneklerine benziyorsa
-        # confidence'i düşür.
         neg_penalty = 0.0
         neg_mean = self.negative_means.get(best_label)
         if neg_mean is not None:
@@ -294,11 +265,6 @@ class NCMClassifier:
         accepted: bool,
         corrected_label: Optional[str] = None,
     ) -> bool:
-        """
-        accepted=True  => predicted_label (veya corrected_label) için pozitif güncelle.
-        accepted=False => predicted_label için negatif güncelle.
-                         corrected_label varsa o sınıfa pozitif güncelle.
-        """
         if accepted:
             target = (corrected_label or predicted_label or "").strip()
             if not target:

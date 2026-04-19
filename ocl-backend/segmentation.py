@@ -12,7 +12,22 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from config import SAM_CHECKPOINT, SAM_MODEL_TYPE, CROP_SIZE, DEVICE
+from config import (
+    SAM_CHECKPOINT,
+    SAM_MODEL_TYPE,
+    CROP_SIZE,
+    DEVICE,
+    SAM_DEVICE,
+    SAM_AUTO_POINTS_PER_SIDE,
+    SAM_AUTO_PRED_IOU_THRESH,
+    SAM_AUTO_STABILITY_THRESH,
+    SAM_AUTO_MIN_MASK_AREA,
+    SCAN_FALLBACK,
+    SLIDING_WINDOW,
+    SLIDING_STRIDE_RATIO,
+    SCAN_MAX_WINDOWS,
+    GRID_FALLBACK_N,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +45,9 @@ def _load_sam():
         return None
     try:
         from segment_anything import SamPredictor, sam_model_registry
-        logger.info(f"SAM yükleniyor: {SAM_MODEL_TYPE} @ {DEVICE}")
+        logger.info(f"SAM yükleniyor: {SAM_MODEL_TYPE} @ {SAM_DEVICE} (projede DEVICE={DEVICE})")
         sam = sam_model_registry[SAM_MODEL_TYPE](checkpoint=str(checkpoint))
-        sam.to(DEVICE)
+        sam.to(SAM_DEVICE)
         _predictor = SamPredictor(sam)
         logger.info("SAM hazır.")
         return _predictor
@@ -51,14 +66,14 @@ def _load_auto_generator():
     try:
         from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
         sam = sam_model_registry[SAM_MODEL_TYPE](checkpoint=str(checkpoint))
-        sam.to(DEVICE)
+        sam.to(SAM_DEVICE)
         # points_per_side arttırılırsa daha hassas ama yavaş
         _auto_generator = SamAutomaticMaskGenerator(
             sam,
-            points_per_side=16,
-            pred_iou_thresh=0.88,
-            stability_score_thresh=0.92,
-            min_mask_region_area=500,
+            points_per_side=SAM_AUTO_POINTS_PER_SIDE,
+            pred_iou_thresh=SAM_AUTO_PRED_IOU_THRESH,
+            stability_score_thresh=SAM_AUTO_STABILITY_THRESH,
+            min_mask_region_area=SAM_AUTO_MIN_MASK_AREA,
         )
         logger.info("SAM AutoGenerator hazır.")
         return _auto_generator
@@ -121,8 +136,13 @@ def scan_full_image(image: Image.Image) -> list:
     img_np = np.array(image)
 
     if generator is None:
-        # SAM yoksa grid crop fallback
-        return _grid_scan_fallback(image)
+        logger.warning(
+            f"SAM AutoGenerator yok — yedek tarama: {SCAN_FALLBACK} "
+            f"(opencv-python-headless kurulu mu kontrol edin)"
+        )
+        if SCAN_FALLBACK == "grid":
+            return _grid_scan_fallback(image, grid=GRID_FALLBACK_N)
+        return _sliding_window_scan(image)
 
     logger.info("Tam görsel taranıyor...")
     masks = generator.generate(img_np)
@@ -177,10 +197,11 @@ def _fallback_crop(image, cx, cy, radius):
     return {"mask": None, "crop": resized, "crop_b64": image_to_b64(resized), "mask_area": 0}
 
 
-def _grid_scan_fallback(image: Image.Image, grid=4) -> list:
-    """SAM yoksa görüntüyü grid'e böl."""
+def _grid_scan_fallback(image: Image.Image, grid: int) -> list:
+    """Kaba grid yedeği (SCAN_FALLBACK=grid)."""
     w, h = image.size
-    cw, ch = w // grid, h // grid
+    grid = max(2, min(grid, 24))
+    cw, ch = max(1, w // grid), max(1, h // grid)
     results = []
     for row in range(grid):
         for col in range(grid):
@@ -194,4 +215,63 @@ def _grid_scan_fallback(image: Image.Image, grid=4) -> list:
                 "mask_area": cw * ch,
                 "stability_score": 1.0,
             })
+    return results
+
+
+def _tile_starts(dim: int, window: int, stride: int) -> list:
+    """[0, dim-window] aralığını stride ile tara; sağ alt köşeyi kaçırmamak için son tile eklenir."""
+    if dim <= window:
+        return [0]
+    starts = list(range(0, dim - window + 1, stride))
+    last = dim - window
+    if starts[-1] != last:
+        starts.append(last)
+    return starts
+
+
+def _sliding_window_scan(image: Image.Image) -> list:
+    """
+    SAM auto yokken: örtüşen pencerelerle aday bölgeler (4x4 grid'den daha kontrollü).
+    Pencere sayısı SCAN_MAX_WINDOWS'u aşarsa stride büyütülür.
+    """
+    w, h = image.size
+    win = SLIDING_WINDOW if SLIDING_WINDOW > 0 else max(96, min(288, min(w, h) // 3))
+    win = int(max(64, min(win, w, h)))
+
+    stride = max(24, int(win * SLIDING_STRIDE_RATIO))
+
+    for _ in range(48):
+        xs = _tile_starts(w, win, stride)
+        ys = _tile_starts(h, win, stride)
+        if len(xs) * len(ys) <= SCAN_MAX_WINDOWS:
+            break
+        if stride >= win:
+            break
+        stride = min(win - 1, int(stride * 1.35) + 8)
+
+    xs = _tile_starts(w, win, stride)
+    ys = _tile_starts(h, win, stride)
+    if len(xs) * len(ys) > SCAN_MAX_WINDOWS:
+        stride = win
+        xs = _tile_starts(w, win, stride)
+        ys = _tile_starts(h, win, stride)
+
+    results = []
+    for y in ys:
+        for x in xs:
+            x2, y2 = min(x + win, w), min(y + win, h)
+            bw, bh = x2 - x, y2 - y
+            if bw < 32 or bh < 32:
+                continue
+            crop = image.crop((x, y, x2, y2))
+            crop_resized = crop.resize((CROP_SIZE, CROP_SIZE), Image.LANCZOS)
+            results.append({
+                "bbox": [float(x), float(y), float(bw), float(bh)],
+                "crop": crop_resized,
+                "crop_b64": image_to_b64(crop_resized),
+                "mask_area": int(bw * bh),
+                "stability_score": 1.0,
+            })
+
+    logger.info(f"Sliding fallback: win={win} stride={stride} aday={len(results)}")
     return results
