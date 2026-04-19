@@ -1,4 +1,4 @@
-import { Annotation, FeedbackItem, FeedbackResponse, SegmentResponse } from '../types'
+import { Annotation, FeedbackItem, FeedbackResponse, ResetMemoryResponse, SegmentResponse } from '../types'
 
 const BASE = '/api'
 
@@ -47,6 +47,14 @@ export async function sendFeedback(items: FeedbackItem[]): Promise<FeedbackRespo
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ items }),
   })
+  if (!res.ok) {
+    throw new Error(`Backend hatası: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function resetMemory(): Promise<ResetMemoryResponse> {
+  const res = await fetch(`${BASE}/reset-memory`, { method: 'POST' })
   if (!res.ok) {
     throw new Error(`Backend hatası: ${res.status}`)
   }

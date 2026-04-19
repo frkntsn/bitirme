@@ -53,6 +53,13 @@ GRID_FALLBACK_N = int(os.getenv("GRID_FALLBACK_N", "6"))
 # Replay buffer (Faz 3)
 BUFFER_SIZE = int(os.getenv("BUFFER_SIZE", "5000"))
 
+# Öğrenilen sınıflar (NCM + buffer) — sunucu restart sonrası korunur; sadece /reset-memory ile silinir
+_online_flag = os.getenv("ONLINE_MEMORY_ENABLED", "1").strip().lower()
+ONLINE_MEMORY_ENABLED = _online_flag not in ("0", "false", "no", "off")
+ONLINE_MEMORY_PATH = Path(
+    os.getenv("ONLINE_MEMORY_PATH", str(BASE_DIR / "data" / "online_memory.pkl"))
+)
+
 # CORS — frontend adresi
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
 

@@ -4,7 +4,9 @@ NCM + MIR buffer ile online güncelleme aynı kalır.
 """
 
 import logging
+import pickle
 from collections import defaultdict
+from pathlib import Path
 from typing import Optional
 
 import os
@@ -15,7 +17,15 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
 
-from config import BUFFER_SIZE, DEVICE, DINOV2_IMG_SIZE, DINOV2_MODEL, VLM_MODEL_NAME
+from config import (
+    BUFFER_SIZE,
+    DEVICE,
+    DINOV2_IMG_SIZE,
+    DINOV2_MODEL,
+    VLM_MODEL_NAME,
+    ONLINE_MEMORY_ENABLED,
+    ONLINE_MEMORY_PATH,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +299,90 @@ class NCMClassifier:
 
 buffer = MIRBuffer(max_size=BUFFER_SIZE)
 classifier = NCMClassifier()
+
+
+def save_online_memory() -> None:
+    """NCM + buffer'ı diske yazar (atomik)."""
+    if not ONLINE_MEMORY_ENABLED:
+        return
+    path = Path(ONLINE_MEMORY_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state = {
+        "version": 1,
+        "class_means": {k: np.asarray(v, dtype=np.float32) for k, v in classifier.class_means.items()},
+        "class_counts": dict(classifier.class_counts),
+        "negative_means": {k: np.asarray(v, dtype=np.float32) for k, v in classifier.negative_means.items()},
+        "negative_counts": dict(classifier.negative_counts),
+        "buffer_features": [np.asarray(f, dtype=np.float32) for f in buffer.features],
+        "buffer_labels": list(buffer.labels),
+        "buffer_n_seen": buffer._n_seen,
+    }
+    tmp = path.with_suffix(".pkl.tmp")
+    try:
+        with open(tmp, "wb") as f:
+            pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(path)
+        logger.debug(f"Online hafıza kaydedildi: {path}")
+    except Exception as e:
+        logger.warning(f"Online hafıza kaydedilemedi: {e}")
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def load_online_memory() -> None:
+    """Diskteki NCM + buffer'ı yükler; dosya yoksa mevcut boş durum kalır."""
+    global buffer, classifier
+    if not ONLINE_MEMORY_ENABLED:
+        return
+    path = Path(ONLINE_MEMORY_PATH)
+    if not path.is_file():
+        logger.info("Kalıcı online hafıza dosyası yok, boş başlanıyor.")
+        return
+    try:
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+    except Exception as e:
+        logger.warning(f"Kalıcı hafıza okunamadı: {e}")
+        return
+
+    clf = NCMClassifier()
+    means = state.get("class_means") or {}
+    clf.class_means = {str(k): np.asarray(v, dtype=np.float32) for k, v in means.items()}
+    clf.class_counts = defaultdict(int, state.get("class_counts") or {})
+    neg_m = state.get("negative_means") or {}
+    clf.negative_means = {str(k): np.asarray(v, dtype=np.float32) for k, v in neg_m.items()}
+    clf.negative_counts = defaultdict(int, state.get("negative_counts") or {})
+
+    buf = MIRBuffer(max_size=BUFFER_SIZE)
+    feats = state.get("buffer_features") or []
+    buf.features = [np.asarray(x, dtype=np.float32) for x in feats]
+    buf.labels = list(state.get("buffer_labels") or [])
+    buf._n_seen = int(state.get("buffer_n_seen", len(buf.features)))
+
+    classifier = clf
+    buffer = buf
+    logger.info(f"Kalıcı online hafıza yüklendi: {path} sınıflar={classifier.known_classes}")
+
+
+def reset_online_memory() -> None:
+    """
+    NCM + replay buffer sıfırlanır; kalıcı dosya silinir.
+    DINOv2 ağırlıkları değişmez.
+    """
+    global buffer, classifier
+    buffer = MIRBuffer(max_size=BUFFER_SIZE)
+    classifier = NCMClassifier()
+    if ONLINE_MEMORY_ENABLED:
+        p = Path(ONLINE_MEMORY_PATH)
+        if p.is_file():
+            try:
+                p.unlink()
+            except OSError as e:
+                logger.warning(f"Hafıza dosyası silinemedi: {e}")
+    logger.info("Online hafıza sıfırlandı (NCM + buffer + disk).")
 
 
 def predict_and_update(crop: Image.Image, label: str) -> tuple:

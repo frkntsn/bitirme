@@ -9,6 +9,7 @@ POST /segment:
 
 import logging
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from typing import List
 
 from fastapi import FastAPI, HTTPException
@@ -22,7 +23,7 @@ from config import (
 )
 from schemas import (
     SegmentRequest, SegmentResponse, SegmentResult, DetectedRegion, HealthResponse,
-    InferRequest, FeedbackRequest, FeedbackResponse
+    InferRequest, FeedbackRequest, FeedbackResponse, ResetMemoryResponse,
 )
 import segmentation
 import vlm_model
@@ -30,7 +31,15 @@ import vlm_model
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="OCL Annotation Backend", version="0.2.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    vlm_model.load_online_memory()
+    yield
+    vlm_model.save_online_memory()
+
+
+app = FastAPI(title="OCL Annotation Backend", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -80,6 +89,20 @@ def health():
         vlm_loaded=vlm_model.is_loaded(),
         vlm_backend=vlm_model.loaded_backend_name(),
         device=DEVICE,
+        buffer_size=len(vlm_model.buffer),
+        known_classes=vlm_model.classifier.known_classes,
+    )
+
+
+@app.post("/reset-memory", response_model=ResetMemoryResponse)
+def reset_memory():
+    """
+    Online öğrenme hafızasını temizler (NCM + negatif hafıza + replay buffer + disk dosyası).
+    DINOv2/CLIP gömü modeli aynı kalır. Bunu siz çağırana kadar öğrenilen sınıflar kalıcı dosyada saklanır.
+    """
+    vlm_model.reset_online_memory()
+    return ResetMemoryResponse(
+        ok=True,
         buffer_size=len(vlm_model.buffer),
         known_classes=vlm_model.classifier.known_classes,
     )
@@ -152,6 +175,9 @@ def segment(req: SegmentRequest):
             f"{len(detections)} son (threshold={DETECTION_THRESHOLD}, "
             f"nms_iou={DETECTION_NMS_IOU}, top_k={DETECTION_TOP_K})"
         )
+
+    if any_updated:
+        vlm_model.save_online_memory()
 
     return SegmentResponse(
         results=annotation_results,
@@ -234,5 +260,8 @@ def feedback(req: FeedbackRequest):
         except Exception as e:
             logger.error(f"Feedback işlenemedi: {e}")
             skipped += 1
+
+    if updated > 0:
+        vlm_model.save_online_memory()
 
     return FeedbackResponse(updated_count=updated, skipped_count=skipped)

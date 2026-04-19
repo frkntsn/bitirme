@@ -65,3 +65,9 @@ class HealthResponse(BaseModel):
     device: str
     buffer_size: int
     known_classes: List[str]
+
+
+class ResetMemoryResponse(BaseModel):
+    ok: bool
+    buffer_size: int
+    known_classes: List[str]

@@ -19,12 +19,14 @@ interface Props {
   results: SegmentResult[]
   detections: DetectedRegion[]
   error: string | null
+  successMessage: string | null
+  onResetLearnedMemory: () => void
 }
 
 export default function AnnotationSidebar({
   label, onLabelChange, annotations, onRemove,
   onClearAll, onSend, onScanOnly, onDetectionFeedback, correctedLabels, onCorrectedLabelChange,
-  loading, results, detections, error,
+  loading, results, detections, error, successMessage, onResetLearnedMemory,
 }: Props) {
   return (
     <aside className={styles.sidebar}>
@@ -84,6 +86,24 @@ export default function AnnotationSidebar({
         {loading ? 'Taranıyor...' : 'Sadece Tara (Annotasyonsuz)'}
       </button>
 
+      <button
+        type="button"
+        className={styles.dangerBtn}
+        disabled={loading}
+        onClick={() => {
+          if (
+            window.confirm(
+              'Sunucudaki öğrenilen tüm sınıflar ve replay buffer silinecek (diskteki hafıza dahil). Emin misiniz?'
+            )
+          ) {
+            onResetLearnedMemory()
+          }
+        }}
+      >
+        Öğrenilen sınıfları unut
+      </button>
+
+      {successMessage && <div className={styles.successBox}>{successMessage}</div>}
       {error && <div className={styles.errorBox}>{error}</div>}
 
       {/* Tespit özeti */}

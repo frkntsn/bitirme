@@ -209,3 +209,6 @@ __marimo__/
 # Large model weights (avoid committing to GitHub)
 ocl-backend/weights/
 *.pth
+
+# Sunucuda öğrenilen NCM + buffer (kullanıcı verisi)
+ocl-backend/data/

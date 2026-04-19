@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback } from 'react'
 import ImageCanvas from './components/ImageCanvas'
 import AnnotationSidebar from './components/AnnotationSidebar'
 import { useAnnotation } from './hooks/useAnnotation'
-import { infer, segment, sendFeedback } from './api/client'
+import { infer, resetMemory, segment, sendFeedback } from './api/client'
 import { SegmentResult, DetectedRegion } from './types'
 import styles from './App.module.css'
 
@@ -15,6 +15,7 @@ export default function App() {
   const [results, setResults] = useState<SegmentResult[]>([])
   const [detections, setDetections] = useState<DetectedRegion[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [correctedLabels, setCorrectedLabels] = useState<Record<number, string>>({})
   const containerRef = useRef<HTMLDivElement>(null)
@@ -31,6 +32,7 @@ export default function App() {
       setResults([])
       setDetections([])
       setError(null)
+      setSuccessMessage(null)
       setCorrectedLabels({})
       clearAll()
     }
@@ -56,6 +58,7 @@ export default function App() {
     if (!imageBase64 || annotations.length === 0) return
     setLoading(true)
     setError(null)
+    setSuccessMessage(null)
     try {
       const res = await segment(imageBase64, annotations)
       setResults(res.results)
@@ -71,12 +74,32 @@ export default function App() {
     if (!imageBase64) return
     setLoading(true)
     setError(null)
+    setSuccessMessage(null)
     try {
       const res = await infer(imageBase64)
       setResults(res.results)
       setDetections(res.detections)
     } catch (err: any) {
       setError(err.message || 'Bilinmeyen hata')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleResetLearnedMemory = async () => {
+    setLoading(true)
+    setError(null)
+    setSuccessMessage(null)
+    try {
+      const res = await resetMemory()
+      setResults([])
+      setDetections([])
+      setCorrectedLabels({})
+      setSuccessMessage(
+        `Öğrenilen sınıflar ve disk hafızası silindi. (bilinen sınıf: ${res.known_classes.length}, buffer: ${res.buffer_size})`
+      )
+    } catch (err: any) {
+      setError(err.message || 'Sıfırlama hatası')
     } finally {
       setLoading(false)
     }
@@ -167,6 +190,8 @@ export default function App() {
           results={results}
           detections={detections}
           error={error}
+          successMessage={successMessage}
+          onResetLearnedMemory={handleResetLearnedMemory}
         />
       </main>
     </div>

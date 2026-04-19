@@ -180,6 +180,38 @@
   color: #c53030;
 }
 
+.successBox {
+  background: #f0fdf4;
+  border: 0.5px solid #86efac;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+  color: #166534;
+}
+
+.dangerBtn {
+  padding: 10px;
+  margin-top: 8px;
+  background: #b91c1c;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  width: 100%;
+}
+
+.dangerBtn:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+.dangerBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .resultsCard {
   background: #fff;
   border: 0.5px solid #e0e0e0;

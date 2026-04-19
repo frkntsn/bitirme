@@ -44,3 +44,9 @@ export interface FeedbackResponse {
   updated_count: number
   skipped_count: number
 }
+
+export interface ResetMemoryResponse {
+  ok: boolean
+  buffer_size: number
+  known_classes: string[]
+}

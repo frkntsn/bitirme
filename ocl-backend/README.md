@@ -37,6 +37,7 @@ API docs: `http://localhost:8000/docs`
 | Method | Path | Açıklama |
 |--------|------|---------|
 | GET | /health | SAM + VLM yüklü mü? Buffer boyutu? |
+| POST | /reset-memory | NCM + buffer + `data/online_memory.pkl` sıfırla (yalnızca siz unutturunca) |
 | POST | /segment | Segmentasyon + tahmin + online update |
 
 ### POST /segment
@@ -72,6 +73,13 @@ API docs: `http://localhost:8000/docs`
 SAM (`segment_anything`) tam görsel maskesinde MPS + float64 hatası verebildiği için varsayılan olarak **SAM ayrı cihazda CPU** çalışır (`SAM_DEVICE` boşken `DEVICE=mps` → `SAM_DEVICE=cpu`). İstersen `.env` ile `SAM_DEVICE=mps` deneyebilirsin; hata alırsan `cpu` bırak.
 
 Tam görsel tarama için `opencv-python-headless` kurulu olmalı (SAM `SamAutomaticMaskGenerator`).
+
+## Kalıcı sınıf hafızası (.env, isteğe bağlı)
+
+Öğrenilen NCM + replay buffer varsayılan olarak `ocl-backend/data/online_memory.pkl` dosyasına yazılır; sunucu yeniden başlasa da korunur. Unutmak için yalnızca `POST /reset-memory` kullanın.
+
+- `ONLINE_MEMORY_ENABLED=0` — diske yazma/okuma kapalı (her restart’ta boş).
+- `ONLINE_MEMORY_PATH` — farklı dosya yolu.
 
 ## Tespit ayarları (.env, isteğe bağlı)
 
