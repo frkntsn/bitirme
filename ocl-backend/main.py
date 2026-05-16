@@ -91,6 +91,7 @@ def health():
         device=DEVICE,
         buffer_size=len(vlm_model.buffer),
         known_classes=vlm_model.classifier.known_classes,
+        pearl_lite=vlm_model.pearl_status(),
     )
 
 

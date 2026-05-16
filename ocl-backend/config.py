@@ -65,3 +65,14 @@ CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
 
 # HuggingFace (CLIP vb. Hugging Face ağırlıkları için isteğe bağlı)
 HF_TOKEN = os.getenv("HUGGINGFACE_TOKEN", None)
+
+# PEARL-lite — DINOv2 son bloklarında LoRA + SVD dinamik rank
+_pearl_flag = os.getenv("PEARL_LITE_ENABLED", "1").strip().lower()
+PEARL_LITE_ENABLED = _pearl_flag not in ("0", "false", "no", "off")
+PEARL_NUM_BLOCKS = int(os.getenv("PEARL_NUM_BLOCKS", "2"))
+PEARL_LORA_R_MAX = int(os.getenv("PEARL_LORA_R_MAX", "16"))
+PEARL_LORA_ALPHA = float(os.getenv("PEARL_LORA_ALPHA", "16"))
+PEARL_TRAIN_STEPS = int(os.getenv("PEARL_TRAIN_STEPS", "12"))
+PEARL_LR = float(os.getenv("PEARL_LR", "1e-4"))
+PEARL_MIN_CROPS = int(os.getenv("PEARL_MIN_CROPS", "1"))
+PEARL_MAX_CROPS_PER_CLASS = int(os.getenv("PEARL_MAX_CROPS_PER_CLASS", "16"))

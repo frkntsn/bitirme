@@ -25,6 +25,14 @@ from config import (
     VLM_MODEL_NAME,
     ONLINE_MEMORY_ENABLED,
     ONLINE_MEMORY_PATH,
+    PEARL_LITE_ENABLED,
+    PEARL_NUM_BLOCKS,
+    PEARL_LORA_R_MAX,
+    PEARL_LORA_ALPHA,
+    PEARL_TRAIN_STEPS,
+    PEARL_LR,
+    PEARL_MIN_CROPS,
+    PEARL_MAX_CROPS_PER_CLASS,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,8 +45,14 @@ _DINOV2_LOAD_FAILED = False
 _clip_model = None
 _clip_processor = None
 
+_pearl_manager = None
+_pending_pearl_state: Optional[dict] = None
+_class_crop_cache: dict = {}  # label -> list[PIL.Image] (PEARL-lite eğitimi için)
 
-def _dinov2_cls_embedding(model: torch.nn.Module, tensor: torch.Tensor) -> Optional[torch.Tensor]:
+
+def _dinov2_cls_embedding(
+    model: torch.nn.Module, tensor: torch.Tensor, normalize: bool = True
+) -> Optional[torch.Tensor]:
     """forward_features çıktısından (B, D) CLS vektörü."""
     out = model.forward_features(tensor)
     if isinstance(out, dict):
@@ -53,10 +67,98 @@ def _dinov2_cls_embedding(model: torch.nn.Module, tensor: torch.Tensor) -> Optio
         return None
     if isinstance(out, torch.Tensor):
         if out.dim() == 3:
-            return out[:, 0]
-        if out.dim() == 2:
-            return out
+            feats = out[:, 0]
+        elif out.dim() == 2:
+            feats = out
+        else:
+            return None
+        if normalize:
+            feats = F.normalize(feats, dim=-1)
+        return feats
     return None
+
+
+def _embed_batch_for_pearl(model: torch.nn.Module, batch: torch.Tensor) -> Optional[torch.Tensor]:
+    """PEARL-lite eğitimi: grad açık batch embedding."""
+    return _dinov2_cls_embedding(model, batch, normalize=True)
+
+
+def _init_pearl_on_model(model: torch.nn.Module, transform) -> None:
+    global _pearl_manager, _pending_pearl_state
+    if not PEARL_LITE_ENABLED or _pearl_manager is not None:
+        return
+    try:
+        from pearl_lite import PearlLiteManager, attach_lora_to_dinov2
+
+        lora_modules = attach_lora_to_dinov2(
+            model,
+            num_last_blocks=PEARL_NUM_BLOCKS,
+            rank_max=PEARL_LORA_R_MAX,
+            alpha=PEARL_LORA_ALPHA,
+        )
+        if not lora_modules:
+            return
+        # LoRA, model.to(DEVICE) sonrası eklendiği için tüm alt modülleri yeniden taşı.
+        model.to(DEVICE)
+        _pearl_manager = PearlLiteManager(
+            model=model,
+            lora_modules=lora_modules,
+            embed_fn=_embed_batch_for_pearl,
+            device=DEVICE,
+            rank_max=PEARL_LORA_R_MAX,
+            train_steps=PEARL_TRAIN_STEPS,
+            lr=PEARL_LR,
+            min_crops=PEARL_MIN_CROPS,
+        )
+        _pearl_manager._transform = transform
+        if _pending_pearl_state:
+            try:
+                _pearl_manager.load_state_dict(_pending_pearl_state)
+                adapted = _pending_pearl_state.get("adapted_classes") or []
+                _pearl_manager.adapted_classes = set(adapted)
+                logger.info(f"PEARL-lite state diskten yüklendi: {sorted(_pearl_manager.adapted_classes)}")
+            except Exception as e:
+                logger.warning(f"PEARL-lite pending state yüklenemedi: {e}")
+            _pending_pearl_state = None
+        logger.info("PEARL-lite yöneticisi hazır.")
+    except Exception as e:
+        logger.warning(f"PEARL-lite başlatılamadı: {e}")
+        _pearl_manager = None
+
+
+def _cache_crop_for_pearl(label: str, crop: Image.Image) -> None:
+    if not PEARL_LITE_ENABLED:
+        return
+    lst = _class_crop_cache.setdefault(label, [])
+    lst.append(crop.copy())
+    if len(lst) > PEARL_MAX_CROPS_PER_CLASS:
+        _class_crop_cache[label] = lst[-PEARL_MAX_CROPS_PER_CLASS:]
+
+
+def _maybe_pearl_adapt(label: str, is_new_class: bool) -> bool:
+    """Yeni sınıf ilk kez eklendiğinde LoRA + SVD adaptasyonu."""
+    if not is_new_class or _pearl_manager is None:
+        return False
+    crops = _class_crop_cache.get(label, [])
+    # Güncellemeden önceki diğer sınıf prototipleri (yeni sınıf hariç)
+    means_before = {k: v for k, v in classifier.class_means.items() if k != label}
+    return _pearl_manager.adapt_new_class(
+        label=label,
+        crops=crops,
+        class_means=means_before,
+        exclude_label=label,
+    )
+
+
+def pearl_status() -> dict:
+    if _pearl_manager is None:
+        return {"enabled": PEARL_LITE_ENABLED, "active": False}
+    return {
+        "enabled": PEARL_LITE_ENABLED,
+        "active": True,
+        "adapted_classes": sorted(_pearl_manager.adapted_classes),
+        "lora_layers": len(_pearl_manager.lora_modules),
+    }
 
 
 def _load_dinov2():
@@ -97,6 +199,7 @@ def _load_dinov2():
         )
         _dinov2_model = model
         _dinov2_backend_label = f"facebookresearch/dinov2:{DINOV2_MODEL}"
+        _init_pearl_on_model(model, _dinov2_transform)
         logger.info("DINOv2 hazır.")
         return _dinov2_model, _dinov2_transform
     except Exception as e:
@@ -308,7 +411,7 @@ def save_online_memory() -> None:
     path = Path(ONLINE_MEMORY_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     state = {
-        "version": 1,
+        "version": 2,
         "class_means": {k: np.asarray(v, dtype=np.float32) for k, v in classifier.class_means.items()},
         "class_counts": dict(classifier.class_counts),
         "negative_means": {k: np.asarray(v, dtype=np.float32) for k, v in classifier.negative_means.items()},
@@ -316,6 +419,10 @@ def save_online_memory() -> None:
         "buffer_features": [np.asarray(f, dtype=np.float32) for f in buffer.features],
         "buffer_labels": list(buffer.labels),
         "buffer_n_seen": buffer._n_seen,
+        "pearl": _pearl_manager.state_dict() if _pearl_manager is not None else None,
+        "pearl_adapted_classes": (
+            list(_pearl_manager.adapted_classes) if _pearl_manager is not None else []
+        ),
     }
     tmp = path.with_suffix(".pkl.tmp")
     try:
@@ -334,7 +441,7 @@ def save_online_memory() -> None:
 
 def load_online_memory() -> None:
     """Diskteki NCM + buffer'ı yükler; dosya yoksa mevcut boş durum kalır."""
-    global buffer, classifier
+    global buffer, classifier, _pending_pearl_state
     if not ONLINE_MEMORY_ENABLED:
         return
     path = Path(ONLINE_MEMORY_PATH)
@@ -364,17 +471,37 @@ def load_online_memory() -> None:
 
     classifier = clf
     buffer = buf
+
+    if state.get("pearl"):
+        if _pearl_manager is not None:
+            try:
+                _pearl_manager.load_state_dict(state["pearl"])
+                _pearl_manager.adapted_classes = set(state.get("pearl_adapted_classes") or [])
+            except Exception as e:
+                logger.warning(f"PEARL-lite state yüklenemedi: {e}")
+        else:
+            _pending_pearl_state = state["pearl"]
+            if state.get("pearl_adapted_classes"):
+                _pending_pearl_state["adapted_classes"] = state["pearl_adapted_classes"]
+
     logger.info(f"Kalıcı online hafıza yüklendi: {path} sınıflar={classifier.known_classes}")
 
 
 def reset_online_memory() -> None:
     """
     NCM + replay buffer sıfırlanır; kalıcı dosya silinir.
-    DINOv2 ağırlıkları değişmez.
+    DINOv2 taban ağırlıkları değişmez; LoRA sıfırlanır.
     """
-    global buffer, classifier
+    global buffer, classifier, _class_crop_cache
     buffer = MIRBuffer(max_size=BUFFER_SIZE)
     classifier = NCMClassifier()
+    _class_crop_cache = {}
+    if _pearl_manager is not None:
+        for m in _pearl_manager.lora_modules.values():
+            with torch.no_grad():
+                m.lora_A.zero_()
+                m.lora_B.zero_()
+        _pearl_manager.adapted_classes = set()
     if ONLINE_MEMORY_ENABLED:
         p = Path(ONLINE_MEMORY_PATH)
         if p.is_file():
@@ -386,6 +513,10 @@ def reset_online_memory() -> None:
 
 
 def predict_and_update(crop: Image.Image, label: str) -> tuple:
+    label = (label or "").strip()
+    is_new_class = label not in classifier.class_means
+    _cache_crop_for_pearl(label, crop)
+
     feature = extract_features(crop)
     if feature is None:
         return label, 1.0, False
@@ -395,5 +526,19 @@ def predict_and_update(crop: Image.Image, label: str) -> tuple:
     for rf, rl in zip(replay_feats, replay_labels):
         classifier.update(rl, rf)
     buffer.add(feature, label)
-    logger.info(f"Update: '{label}' → pred='{predicted_class}' conf={confidence:.2f} | buffer={len(buffer)}")
+
+    pearl_done = False
+    if is_new_class:
+        pearl_done = _maybe_pearl_adapt(label, is_new_class=True)
+        if pearl_done:
+            feature2 = extract_features(crop)
+            if feature2 is not None:
+                classifier.class_means[label] = feature2.copy()
+                classifier.class_counts[label] = max(1, classifier.class_counts[label])
+            save_online_memory()
+
+    logger.info(
+        f"Update: '{label}' → pred='{predicted_class}' conf={confidence:.2f} | "
+        f"buffer={len(buffer)} pearl={'yes' if pearl_done else 'no'}"
+    )
     return predicted_class, confidence, True

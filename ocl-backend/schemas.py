@@ -65,6 +65,7 @@ class HealthResponse(BaseModel):
     device: str
     buffer_size: int
     known_classes: List[str]
+    pearl_lite: Optional[dict] = None
 
 
 class ResetMemoryResponse(BaseModel):

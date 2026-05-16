@@ -74,6 +74,21 @@ SAM (`segment_anything`) tam görsel maskesinde MPS + float64 hatası verebildi�
 
 Tam görsel tarama için `opencv-python-headless` kurulu olmalı (SAM `SamAutomaticMaskGenerator`).
 
+## PEARL-lite (LoRA + SVD, `.env`)
+
+Yeni bir sınıf **ilk kez** öğrenildiğinde DINOv2’nin son bloklarındaki `attn.qkv` katmanlarına kısa LoRA eğitimi uygulanır; ardından görev vektörü üzerinde SVD ile dinamik rank seçilir (PEARL Eq.3–4 basitleştirilmiş).
+
+| Değişken | Varsayılan | Açıklama |
+|----------|------------|----------|
+| `PEARL_LITE_ENABLED` | `1` | `0` ile kapat |
+| `PEARL_NUM_BLOCKS` | `2` | Son kaç ViT bloğu |
+| `PEARL_LORA_R_MAX` | `16` | Maksimum LoRA rank |
+| `PEARL_TRAIN_STEPS` | `12` | Adaptasyon adım sayısı |
+| `PEARL_LR` | `1e-4` | LoRA öğrenme oranı |
+| `PEARL_MIN_CROPS` | `1` | Adapt için minimum crop |
+
+`/health` yanıtında `pearl_lite` alanı: aktif mi, hangi sınıflar adapte edildi.
+
 ## Kalıcı sınıf hafızası (.env, isteğe bağlı)
 
 Öğrenilen NCM + replay buffer varsayılan olarak `ocl-backend/data/online_memory.pkl` dosyasına yazılır; sunucu yeniden başlasa da korunur. Unutmak için yalnızca `POST /reset-memory` kullanın.
