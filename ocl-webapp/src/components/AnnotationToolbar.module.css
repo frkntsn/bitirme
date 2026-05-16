@@ -1,0 +1,84 @@
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-xl);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  flex-shrink: 0;
+}
+
+.label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+.tools {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.toolBtn {
+  flex: 1;
+  min-width: 64px;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.toolBtn:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.toolBtn.active {
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.brushRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  font-size: 13px;
+  color: var(--text-muted);
+  padding-top: var(--space-xs);
+}
+
+.brushRow input {
+  flex: 1;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+@media (max-width: 1024px) {
+  .toolbar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: var(--space-lg);
+    gap: var(--space-lg);
+  }
+
+  .tools {
+    flex: 1;
+  }
+
+  .hint {
+    display: none;
+  }
+}
