@@ -1,0 +1,54 @@
+{
+    "benchmark_image": "SipakMed_Cluster_Sample.tif",
+    "image_size": "2048x1536",
+    "device": "facebookresearch/dinov2:dinov2_vitb14",
+    "dinov2_model": "dinov2_vitb14",
+    "sam_model": "vit_b",
+    "detection_threshold": 0.65,
+    "timing_ms": {
+        "segment_region": {
+            "cold": 5009.3,
+            "warm_median": 4316.2
+        },
+        "predict_and_update_new_class_pearl": {
+            "cold": 6437.7,
+            "warm_median": 6437.7
+        },
+        "predict_and_update_known_class": {
+            "warm_median": 3947.8
+        },
+        "scan_full_image": {
+            "cold": 48605.8,
+            "warm_median": 49098.7,
+            "segments_found": 155
+        },
+        "embed_per_segment_avg": 82.3
+    },
+    "detection_summary": {
+        "total_segments_scanned": 155,
+        "above_threshold": 153,
+        "threshold": 0.65
+    },
+    "tile_recall_256px": {
+        "Class4": {
+            "tiles_hit": 47,
+            "tiles_total": 48,
+            "recall": 0.9792
+        },
+        "Class1": {
+            "tiles_hit": 3,
+            "tiles_total": 48,
+            "recall": 0.0625
+        }
+    },
+    "functional_checks": {
+        "Hafıza sıfırlama (reset_online_memory)": "PASS",
+        "DINOv2 yüklendi": "PASS",
+        "SAM yüklendi": "PASS",
+        "Öğretme — Class1": "PASS",
+        "Öğretme — tüm sınıflar (4)": "PASS",
+        "Disk kayıt + reload": "PASS",
+        "PEARL-lite durumu": "PASS"
+    },
+    "functional_summary": "7/7 PASS"
+}
